@@ -1,18 +1,17 @@
 /**
- * Google Drive Folder Topology — Drive API v3 (Stable + Fast)
+ * Google Drive Folder Topology — Accurate Tree Order (DFS) + Drive API v3
+ *
+ * Fixes:
+ * - Prints TRUE folder-tree order (depth-first), not level-by-level (BFS).
+ * - Keeps Drive API v3 (files/name/pageSize).
+ * - Hard clamps + early-stop to prevent hangs/abuse.
  *
  * Requirements:
- * 1) Apps Script > Services > add "Drive API" (v3)
+ * 1) Apps Script > Services > add "Drive API" (v3) with identifier "Drive"
  * 2) Deploy as Web App (recommended: Execute as "User accessing the app")
- *
- * Notes:
- * - Uses Drive API v3 for listing children (fast).
- * - Uses DriveApp only to read the root folder name (simple).
- * - Enforces hard server-side clamps to prevent abuse.
  */
 
 function doGet() {
-  // Must have a file named Index.html (shown as "Index" in Apps Script)
   return HtmlService.createHtmlOutputFromFile("Index")
     .setTitle("Drive Folder Topology");
 }
@@ -34,54 +33,12 @@ function buildTopologyFast(folderUrl, opts) {
   const rootName = DriveApp.getFolderById(folderId).getName();
 
   const lines = [rootName + "/"];
-  let itemsRendered = 0;
+  const state = { itemsRendered: 0, stopped: false };
 
-  // Queue entries: { id, prefix, depth }
-  const queue = [{ id: folderId, prefix: "", depth: 0 }];
+  // Depth-first traversal for correct sequence
+  walkFolderDFS_(folderId, "", 0, maxDepth, maxItems, includeFiles, lines, state);
 
-  while (queue.length && itemsRendered < maxItems) {
-    const cur = queue.shift();
-    if (cur.depth >= maxDepth) continue;
-
-    // Remaining budget for this node; listing stops early.
-    const remainingBudget = Math.min(1500, Math.max(0, maxItems - itemsRendered));
-
-    const children = listChildrenV3_(cur.id, includeFiles, remainingBudget);
-    const folders = children.folders;
-    const files = children.files;
-
-    // Render folders first
-    for (let i = 0; i < folders.length && itemsRendered < maxItems; i++) {
-      const f = folders[i];
-
-      const isLastFolder =
-        (i === folders.length - 1) && (!includeFiles || files.length === 0);
-
-      const branch = isLastFolder ? "└── " : "├── ";
-      lines.push(cur.prefix + branch + f.name + "/");
-      itemsRendered++;
-
-      // Enqueue folder
-      queue.push({
-        id: f.id,
-        prefix: cur.prefix + (isLastFolder ? "    " : "│   "),
-        depth: cur.depth + 1
-      });
-    }
-
-    if (!includeFiles || itemsRendered >= maxItems) continue;
-
-    // Render files
-    for (let j = 0; j < files.length && itemsRendered < maxItems; j++) {
-      const file = files[j];
-      const isLast = j === files.length - 1;
-      const branch = isLast ? "└── " : "├── ";
-      lines.push(cur.prefix + branch + "📄 " + file.name);
-      itemsRendered++;
-    }
-  }
-
-  if (itemsRendered >= maxItems) {
+  if (state.stopped) {
     lines.push("");
     lines.push(`...stopped after ${maxItems} items (increase Max items if needed)`);
   }
@@ -93,7 +50,7 @@ function buildTopologyFast(folderUrl, opts) {
       maxDepth,
       maxItems,
       includeFiles,
-      itemsRendered
+      itemsRendered: state.itemsRendered
     }
   };
 }
@@ -105,12 +62,73 @@ function extractFolderId_(url) {
 }
 
 /**
+ * DFS traversal: prints each folder then immediately prints its children (true tree order)
+ *
+ * @param {string} folderId
+ * @param {string} prefix
+ * @param {number} depth
+ * @param {number} maxDepth
+ * @param {number} maxItems
+ * @param {boolean} includeFiles
+ * @param {string[]} lines
+ * @param {{itemsRendered:number, stopped:boolean}} state
+ */
+function walkFolderDFS_(folderId, prefix, depth, maxDepth, maxItems, includeFiles, lines, state) {
+  if (state.stopped) return;
+  if (depth >= maxDepth) return;
+
+  if (state.itemsRendered >= maxItems) {
+    state.stopped = true;
+    return;
+  }
+
+  // Limit how much we fetch per folder to avoid hangs on massive directories
+  const remaining = maxItems - state.itemsRendered;
+  const perFolderBudget = Math.min(2000, Math.max(0, remaining));
+  if (perFolderBudget <= 0) {
+    state.stopped = true;
+    return;
+  }
+
+  const { folders, files } = listChildrenV3_(folderId, includeFiles, perFolderBudget);
+
+  // Render in the exact order we want:
+  // folders (A–Z), then files (A–Z) if enabled
+  const children = [];
+  for (const f of folders) children.push({ type: "folder", id: f.id, name: f.name });
+  if (includeFiles) for (const fi of files) children.push({ type: "file", id: fi.id, name: fi.name });
+
+  for (let i = 0; i < children.length; i++) {
+    if (state.itemsRendered >= maxItems) {
+      state.stopped = true;
+      return;
+    }
+
+    const child = children[i];
+    const isLast = i === children.length - 1;
+    const branch = isLast ? "└── " : "├── ";
+
+    if (child.type === "folder") {
+      lines.push(prefix + branch + child.name + "/");
+      state.itemsRendered++;
+
+      const nextPrefix = prefix + (isLast ? "    " : "│   ");
+      walkFolderDFS_(child.id, nextPrefix, depth + 1, maxDepth, maxItems, includeFiles, lines, state);
+      if (state.stopped) return;
+    } else {
+      lines.push(prefix + branch + "📄 " + child.name);
+      state.itemsRendered++;
+    }
+  }
+}
+
+/**
  * Drive API v3: list children with early-stop budget.
  * Uses Drive Advanced Service: Drive.Files.list()
  *
  * @param {string} parentId
  * @param {boolean} includeFiles
- * @param {number} budget max children to collect for this parent
+ * @param {number} budget max children to collect for this parent (folders+files)
  */
 function listChildrenV3_(parentId, includeFiles, budget) {
   const folders = [];
@@ -135,9 +153,8 @@ function listChildrenV3_(parentId, includeFiles, budget) {
       if (isFolder) folders.push({ id: it.id, name: it.name });
       else if (includeFiles) files.push({ id: it.id, name: it.name });
 
-      // Early stop
       if ((folders.length + files.length) >= budget) {
-        pageToken = null;
+        pageToken = null; // early stop
         break;
       }
     }
@@ -146,6 +163,7 @@ function listChildrenV3_(parentId, includeFiles, budget) {
     pageToken = res.nextPageToken;
   } while (pageToken);
 
+  // Stable ordering inside each folder
   folders.sort((a, b) => a.name.localeCompare(b.name));
   files.sort((a, b) => a.name.localeCompare(b.name));
 
