@@ -1,0 +1,335 @@
+<!doctype html>
+<html>
+<head>
+  <base target="_top">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root{
+      --bg:#0b0f14;
+      --card:#111827;
+      --muted:#9ca3af;
+      --text:#e5e7eb;
+      --line:#1f2937;
+      --accent:#60a5fa;
+      --btn:#1f2937;
+      --btnHover:#2b374a;
+      --danger:#ef4444;
+      --warn:#fbbf24;
+    }
+    *{ box-sizing:border-box; }
+    body{
+      margin:0;
+      padding:20px;
+      font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial;
+      background:var(--bg);
+      color:var(--text);
+    }
+    .wrap{ max-width: 980px; margin:0 auto; }
+    h1{
+      font-size: clamp(26px, 4vw, 40px);
+      margin:0 0 8px;
+      letter-spacing:-0.02em;
+    }
+    .sub{ color:var(--muted); margin:0 0 18px; line-height:1.4; }
+
+    .card{
+      background:linear-gradient(180deg,#0f172a,#0b1220);
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:16px;
+      box-shadow:0 10px 30px rgba(0,0,0,.25);
+    }
+
+    .grid{ display:grid; gap:12px; }
+    @media(min-width:820px){
+      .grid-3{ grid-template-columns: 1fr 1fr 1fr; }
+    }
+
+    input[type="text"], input[type="number"]{
+      width:100%;
+      padding:12px 14px;
+      border-radius:14px;
+      border:1px solid var(--line);
+      background:#0e1520;
+      color:var(--text);
+      outline:none;
+      font-size:14px;
+    }
+    input[type="number"]{
+      padding:10px 12px;
+    }
+
+    .row{
+      display:flex;
+      gap:10px;
+      flex-wrap:wrap;
+      align-items:center;
+    }
+
+    .pill{
+      display:inline-flex;
+      align-items:center;
+      gap:10px;
+      border:1px solid var(--line);
+      background:#0e1520;
+      border-radius:999px;
+      padding:10px 12px;
+      min-height:44px;
+    }
+
+    .muted{ color:var(--muted); font-size:12px; }
+    .warn{ color:var(--warn); font-size:12px; }
+
+    button{
+      padding:11px 14px;
+      border-radius:14px;
+      border:1px solid var(--line);
+      background:var(--btn);
+      color:var(--text);
+      cursor:pointer;
+      font-size:14px;
+      min-height:44px;
+    }
+    button:hover{ background:var(--btnHover); }
+    button.primary{
+      border-color: rgba(96,165,250,.35);
+      background: rgba(96,165,250,.12);
+    }
+    button.primary:hover{ background: rgba(96,165,250,.18); }
+    button.danger{
+      border-color: rgba(239,68,68,.35);
+      background: rgba(239,68,68,.12);
+    }
+    button.danger:hover{ background: rgba(239,68,68,.18); }
+    button:disabled{ opacity:.5; cursor:not-allowed; }
+
+    .bar{
+      height:10px;
+      width:100%;
+      background:#0e1520;
+      border:1px solid var(--line);
+      border-radius:999px;
+      overflow:hidden;
+    }
+    .bar > div{
+      height:100%;
+      width:0%;
+      background:var(--accent);
+      transition: width .2s ease;
+    }
+
+    pre{
+      margin-top:14px;
+      background:#06090e;
+      border:1px solid var(--line);
+      border-radius:16px;
+      padding:14px;
+      overflow:auto;
+      max-height: 60vh;
+      white-space: pre;
+      display:none;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="wrap">
+    <h1>Google Drive Folder Topology</h1>
+    <p class="sub">Paste a Drive folder link and generate a shareable tree (.txt). Uses your Google permissions.</p>
+
+    <div class="card grid">
+
+      <div class="grid">
+        <input id="link" type="text" placeholder="https://drive.google.com/drive/folders/..." />
+        <div class="muted">Tip: keep <b>Include files</b> OFF for speed. Use depth 2–4 for huge folders.</div>
+      </div>
+
+      <div class="grid grid-3">
+        <label class="pill">
+          <input id="includeFiles" type="checkbox" />
+          Include files <span class="muted">(slower)</span>
+        </label>
+
+        <div>
+          <div class="muted">Max depth (1–50)</div>
+          <input id="maxDepth" type="number" min="1" max="50" value="4" />
+        </div>
+
+        <div>
+          <div class="muted">Max items (100–50000)</div>
+          <input id="maxItems" type="number" min="100" max="50000" value="5000" />
+        </div>
+      </div>
+
+      <div class="row">
+        <button class="primary" id="btnGenerate">Generate</button>
+        <button id="btnDownload" disabled>Download .txt</button>
+        <button id="btnCopy" disabled>Copy</button>
+        <button class="danger" id="btnStop" disabled>Stop</button>
+        <span id="stats" class="muted"></span>
+      </div>
+
+      <div class="grid">
+        <div class="bar"><div id="barFill"></div></div>
+        <div id="status" class="muted">Ready.</div>
+        <div id="warn" class="warn"></div>
+      </div>
+
+      <pre id="out"></pre>
+    </div>
+  </div>
+
+  <script>
+    // ---- state ----
+    let lastText = "";
+    let running = false;
+    let ignoreResult = false;
+    let spinnerTimer = null;
+    let spinnerPct = 0;
+
+    // ---- helpers ----
+    const el = (id) => document.getElementById(id);
+
+    function setStatus(msg){ el("status").textContent = msg; }
+    function setWarn(msg){ el("warn").textContent = msg || ""; }
+    function setBar(pct){ el("barFill").style.width = pct + "%"; }
+
+    function clampInt(n, min, max, fallback){
+      const x = Number(n);
+      if(!Number.isFinite(x)) return fallback;
+      const i = Math.trunc(x);
+      return Math.max(min, Math.min(max, i));
+    }
+
+    function sanitizeInputs(){
+      const maxDepth = clampInt(el("maxDepth").value, 1, 50, 4);
+      const maxItems = clampInt(el("maxItems").value, 100, 50000, 5000);
+      el("maxDepth").value = maxDepth;
+      el("maxItems").value = maxItems;
+      return { maxDepth, maxItems };
+    }
+
+    function setUiBusy(isBusy){
+      running = isBusy;
+      el("btnStop").disabled = !isBusy;
+      el("btnGenerate").disabled = isBusy;
+
+      el("link").disabled = isBusy;
+      el("includeFiles").disabled = isBusy;
+      el("maxDepth").disabled = isBusy;
+      el("maxItems").disabled = isBusy;
+    }
+
+    function startSpinner(){
+      spinnerPct = 15;
+      setBar(spinnerPct);
+      spinnerTimer = setInterval(() => {
+        spinnerPct = Math.min(90, spinnerPct + Math.random() * 6);
+        setBar(spinnerPct);
+      }, 250);
+    }
+
+    function stopSpinner(finalPct){
+      if(spinnerTimer) clearInterval(spinnerTimer);
+      spinnerTimer = null;
+      setBar(finalPct ?? 0);
+    }
+
+    function showOutput(text){
+      const pre = el("out");
+      pre.textContent = text || "";
+      pre.style.display = text ? "block" : "none";
+    }
+
+    // ---- actions ----
+    function generate(){
+      const link = el("link").value.trim();
+      if(!link){ setStatus("Paste a folder link first."); return; }
+
+      const { maxDepth, maxItems } = sanitizeInputs();
+      const includeFiles = !!el("includeFiles").checked;
+
+      setWarn(includeFiles ? "Including files can be slow. Start with files OFF and depth 2–4." : "");
+      el("stats").textContent = "";
+      showOutput("");
+
+      lastText = "";
+      el("btnDownload").disabled = true;
+      el("btnCopy").disabled = true;
+
+      ignoreResult = false;
+      setUiBusy(true);
+      setStatus("Generating...");
+      startSpinner();
+
+      google.script.run
+        .withSuccessHandler((res) => {
+          if(ignoreResult) return;
+          stopSpinner(100);
+          setUiBusy(false);
+
+          lastText = res?.text || "";
+          showOutput(lastText);
+
+          el("btnDownload").disabled = !lastText;
+          el("btnCopy").disabled = !lastText;
+
+          el("stats").textContent =
+            `Rendered: ${res?.stats?.itemsRendered ?? "?"} | Depth: ${maxDepth} | Items: ${maxItems} | Files: ${includeFiles}`;
+
+          setStatus("Done.");
+        })
+        .withFailureHandler((err) => {
+          if(ignoreResult) return;
+          stopSpinner(0);
+          setUiBusy(false);
+
+          const msg = err?.message || String(err);
+          setStatus("Error: " + msg);
+
+          if(msg.includes("Quota") || msg.includes("Service invoked too many times")){
+            setWarn("Quota limit hit. Try later or reduce Max depth / Max items.");
+          } else if(msg.includes("Invalid field selection")){
+            setWarn("Drive API mismatch. Ensure Drive API v3 is enabled and server code uses v3 fields (files/name).");
+          }
+        })
+        .buildTopologyFast(link, { includeFiles, maxDepth, maxItems });
+    }
+
+    function stop(){
+      // Can't truly cancel Apps Script execution; we ignore the next response.
+      ignoreResult = true;
+      setUiBusy(false);
+      stopSpinner(0);
+      setStatus("Stopped. Try smaller Max depth / Max items.");
+    }
+
+    function downloadTxt(){
+      const blob = new Blob([lastText], { type:"text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = "drive_folder_topology.txt";
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    async function copyTxt(){
+      try{
+        await navigator.clipboard.writeText(lastText);
+        setStatus("Copied to clipboard.");
+      }catch(e){
+        setStatus("Copy blocked by browser. Use Download.");
+      }
+    }
+
+    // ---- wire up ----
+    el("btnGenerate").addEventListener("click", generate);
+    el("btnStop").addEventListener("click", stop);
+    el("btnDownload").addEventListener("click", downloadTxt);
+    el("btnCopy").addEventListener("click", copyTxt);
+
+    el("maxDepth").addEventListener("blur", sanitizeInputs);
+    el("maxItems").addEventListener("blur", sanitizeInputs);
+  </script>
+</body>
+</html>
