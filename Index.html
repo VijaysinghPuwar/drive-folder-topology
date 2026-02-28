@@ -15,6 +15,7 @@
       --btnHover:#2b374a;
       --danger:#ef4444;
       --warn:#fbbf24;
+      --ok:#34d399;
     }
     *{ box-sizing:border-box; }
     body{
@@ -43,6 +44,7 @@
     .grid{ display:grid; gap:12px; }
     @media(min-width:820px){
       .grid-3{ grid-template-columns: 1fr 1fr 1fr; }
+      .grid-2{ grid-template-columns: 1fr 1fr; }
     }
 
     input[type="text"], input[type="number"]{
@@ -55,9 +57,7 @@
       outline:none;
       font-size:14px;
     }
-    input[type="number"]{
-      padding:10px 12px;
-    }
+    input[type="number"]{ padding:10px 12px; }
 
     .row{
       display:flex;
@@ -79,6 +79,7 @@
 
     .muted{ color:var(--muted); font-size:12px; }
     .warn{ color:var(--warn); font-size:12px; }
+    .ok{ color:var(--ok); font-size:12px; }
 
     button{
       padding:11px 14px;
@@ -129,6 +130,16 @@
       white-space: pre;
       display:none;
     }
+
+    .kbd{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 12px;
+      padding: 2px 6px;
+      border: 1px solid var(--line);
+      background: #0e1520;
+      border-radius: 8px;
+      color: var(--muted);
+    }
   </style>
 </head>
 
@@ -141,7 +152,9 @@
 
       <div class="grid">
         <input id="link" type="text" placeholder="https://drive.google.com/drive/folders/..." />
-        <div class="muted">Tip: keep <b>Include files</b> OFF for speed. Use depth 2–4 for huge folders.</div>
+        <div class="muted">
+          Tip: keep <b>Include files</b> OFF for speed. Try depth <span class="kbd">2–4</span> and items <span class="kbd">1000–5000</span>.
+        </div>
       </div>
 
       <div class="grid grid-3">
@@ -152,12 +165,12 @@
 
         <div>
           <div class="muted">Max depth (1–50)</div>
-          <input id="maxDepth" type="number" min="1" max="50" value="4" />
+          <input id="maxDepth" type="number" min="1" max="50" value="4" inputmode="numeric" />
         </div>
 
         <div>
           <div class="muted">Max items (100–50000)</div>
-          <input id="maxItems" type="number" min="100" max="50000" value="5000" />
+          <input id="maxItems" type="number" min="100" max="50000" value="5000" inputmode="numeric" />
         </div>
       </div>
 
@@ -172,6 +185,7 @@
       <div class="grid">
         <div class="bar"><div id="barFill"></div></div>
         <div id="status" class="muted">Ready.</div>
+        <div id="hint" class="muted"></div>
         <div id="warn" class="warn"></div>
       </div>
 
@@ -180,18 +194,18 @@
   </div>
 
   <script>
-    // ---- state ----
+    // --- State ---
     let lastText = "";
-    let running = false;
     let ignoreResult = false;
     let spinnerTimer = null;
     let spinnerPct = 0;
 
-    // ---- helpers ----
+    // --- Helpers ---
     const el = (id) => document.getElementById(id);
 
     function setStatus(msg){ el("status").textContent = msg; }
     function setWarn(msg){ el("warn").textContent = msg || ""; }
+    function setHint(msg){ el("hint").textContent = msg || ""; }
     function setBar(pct){ el("barFill").style.width = pct + "%"; }
 
     function clampInt(n, min, max, fallback){
@@ -202,6 +216,7 @@
     }
 
     function sanitizeInputs(){
+      // Client-side safety: prevent insane numbers (you had 50B before)
       const maxDepth = clampInt(el("maxDepth").value, 1, 50, 4);
       const maxItems = clampInt(el("maxItems").value, 100, 50000, 5000);
       el("maxDepth").value = maxDepth;
@@ -210,7 +225,6 @@
     }
 
     function setUiBusy(isBusy){
-      running = isBusy;
       el("btnStop").disabled = !isBusy;
       el("btnGenerate").disabled = isBusy;
 
@@ -224,6 +238,7 @@
       spinnerPct = 15;
       setBar(spinnerPct);
       spinnerTimer = setInterval(() => {
+        // Visual-only progress (Apps Script can't stream progress)
         spinnerPct = Math.min(90, spinnerPct + Math.random() * 6);
         setBar(spinnerPct);
       }, 250);
@@ -241,7 +256,7 @@
       pre.style.display = text ? "block" : "none";
     }
 
-    // ---- actions ----
+    // --- Actions ---
     function generate(){
       const link = el("link").value.trim();
       if(!link){ setStatus("Paste a folder link first."); return; }
@@ -249,7 +264,8 @@
       const { maxDepth, maxItems } = sanitizeInputs();
       const includeFiles = !!el("includeFiles").checked;
 
-      setWarn(includeFiles ? "Including files can be slow. Start with files OFF and depth 2–4." : "");
+      setWarn(includeFiles ? "Including files can be slow. Start with files OFF if it takes long." : "");
+      setHint("");
       el("stats").textContent = "";
       showOutput("");
 
@@ -262,9 +278,12 @@
       setStatus("Generating...");
       startSpinner();
 
+      const startedAt = Date.now();
+
       google.script.run
         .withSuccessHandler((res) => {
           if(ignoreResult) return;
+
           stopSpinner(100);
           setUiBusy(false);
 
@@ -274,23 +293,29 @@
           el("btnDownload").disabled = !lastText;
           el("btnCopy").disabled = !lastText;
 
+          const ms = Date.now() - startedAt;
           el("stats").textContent =
-            `Rendered: ${res?.stats?.itemsRendered ?? "?"} | Depth: ${maxDepth} | Items: ${maxItems} | Files: ${includeFiles}`;
+            `Rendered: ${res?.stats?.itemsRendered ?? "?"} | Depth: ${maxDepth} | Items: ${maxItems} | Files: ${includeFiles} | ${ms}ms`;
 
           setStatus("Done.");
+          setHint("If the order looks wrong, make sure server code uses DFS (depth-first), not BFS.");
         })
         .withFailureHandler((err) => {
           if(ignoreResult) return;
+
           stopSpinner(0);
           setUiBusy(false);
 
           const msg = err?.message || String(err);
           setStatus("Error: " + msg);
 
+          // Friendly hints for common errors
           if(msg.includes("Quota") || msg.includes("Service invoked too many times")){
             setWarn("Quota limit hit. Try later or reduce Max depth / Max items.");
           } else if(msg.includes("Invalid field selection")){
-            setWarn("Drive API mismatch. Ensure Drive API v3 is enabled and server code uses v3 fields (files/name).");
+            setWarn("Drive API mismatch. Ensure Drive API v3 is enabled and server uses v3 fields (files/name/pageSize).");
+          } else if(msg.includes("Access") || msg.includes("not found") || msg.includes("Insufficient")){
+            setWarn("Access issue. Make sure the folder link is shared with you (Viewer is enough).");
           }
         })
         .buildTopologyFast(link, { includeFiles, maxDepth, maxItems });
@@ -302,6 +327,7 @@
       setUiBusy(false);
       stopSpinner(0);
       setStatus("Stopped. Try smaller Max depth / Max items.");
+      setHint("");
     }
 
     function downloadTxt(){
@@ -322,7 +348,7 @@
       }
     }
 
-    // ---- wire up ----
+    // --- Wire up ---
     el("btnGenerate").addEventListener("click", generate);
     el("btnStop").addEventListener("click", stop);
     el("btnDownload").addEventListener("click", downloadTxt);
@@ -330,6 +356,14 @@
 
     el("maxDepth").addEventListener("blur", sanitizeInputs);
     el("maxItems").addEventListener("blur", sanitizeInputs);
+
+    // Enter key submits
+    el("link").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !el("btnGenerate").disabled) generate();
+    });
+
+    // Initial sanitize
+    sanitizeInputs();
   </script>
 </body>
 </html>
